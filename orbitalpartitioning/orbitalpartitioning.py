@@ -1,8 +1,107 @@
 import numpy as np
 import scipy
+import warnings
 
 def spade_partitioning(Cocc, Pv, S):
     pass
+
+
+def dmet_clustering(Cocc, Cvir, frags, S):
+    full = []
+    [full.extend(i) for i in frags]
+    nmo = Cocc.shape[1] + Cvir.shape[1]
+
+    init_fspace = [] # Number of electrons in each cluster
+    clusters = []
+
+    Cenv_occ, Cact_occ, Cact_vir, Cenv_vir = dmet_active_space(Cocc, Cvir, full, S)
+    
+    nfrag = len(frags)
+    print(" Partition %4i orbitals into a total of %4i fragments" %(nmo, nfrag))
+
+    Clist = []
+
+    orb_idx = 0
+    for f in frags:
+        _, fo, fv, _ = dmet_active_space(Cocc, Cvir, f, S)
+        Clist.append(np.hstack((fo,fv)))
+
+        ndocc_f = fo.shape[1]
+        init_fspace.append((ndocc_f, ndocc_f))
+
+        nmo_f = fo.shape[1] + fv.shape[1]
+        clusters.append(list(range(orb_idx, orb_idx+nmo_f)))
+        orb_idx += nmo_f
+
+    
+    Clist = sym_ortho(Clist, S)
+
+    out = [Cenv_occ]
+    [out.append(i) for i in Clist]
+    out.append(Cenv_vir)
+
+    print(" init_fspace = ", init_fspace)
+    print(" clusters    = ", clusters)
+
+
+    return out, init_fspace, clusters
+
+def dmet_active_space(Cocc_in, Cvir_in, frag, S):
+        
+    X = scipy.linalg.sqrtm(S)
+    Xinv = np.linalg.inv(X)
+
+    Cocc = X@Cocc_in
+    Cvir = X@Cvir_in
+
+    nbas = S.shape[0]
+    assert(Cocc.shape[0] == nbas)
+    assert(Cvir.shape[0] == nbas)
+    nmo = Cocc.shape[1] + Cvir.shape[1]
+
+    nfrag = len(frag)
+
+    print(" Create DMET active space by projecting %4i MOs onto %4i fragment orbitals" %(nmo, nfrag))
+    # Occupieds
+    _,s,V = np.linalg.svd(Cocc[frag,:], full_matrices=True)
+    nocc = 0
+    for si in s:
+        if si > 1e-6:
+            nocc += 1
+        else:
+            warnings.warn("Small singular values")
+
+    Cact_occ = Cocc @ V[0:nocc,:].T
+    Cenv_occ = Cocc @ V[nocc:,:].T
+
+    # Virtuals
+    _,s,V = np.linalg.svd(Cvir[frag,:], full_matrices=True)
+    nocc = 0
+    for si in s:
+        if si > 1e-6:
+            nocc += 1
+        else:
+            warnings.warn("Small singular values")
+    Cact_vir = Cvir @ V[0:nocc,:].T
+    Cenv_vir = Cvir @ V[nocc:,:].T
+
+    # Un-Orthogonalize
+    Cact_occ = Xinv@Cact_occ
+    Cact_vir = Xinv@Cact_vir
+    Cenv_occ = Xinv@Cenv_occ
+    Cenv_vir = Xinv@Cenv_vir
+
+    
+
+    # print(Cenv.shape, Cact_occ.shape, Cact_vir.shape)
+
+    print(" Dmet active space has the following dimensions:")
+    print("   Environment (occupied)   : %5i" % Cenv_occ.shape[1])
+    print("   Active (occupied)        : %5i" % Cact_occ.shape[1])
+    print("   Active (virtual)         : %5i" % Cact_vir.shape[1])
+    print("   Environment (virtual)    : %5i" % Cenv_vir.shape[1])
+    return Cenv_occ, Cact_occ, Cact_vir, Cenv_vir
+
 
 def canonicalize(orbital_blocks, F):
     """
@@ -12,7 +111,10 @@ def canonicalize(orbital_blocks, F):
     for obi, ob in enumerate(orbital_blocks):
         fi = ob.T @ F @ ob
         fi = .5 * ( fi + fi.T )
-        e, U =  np.linalg.eig(fi)
+        e, U =  np.linalg.eigh(fi)
+        perm = e.argsort()
+        e = e[perm]
+        U = U[:,perm]
         out.append(ob @ U)
     return out
 
@@ -66,10 +168,10 @@ def svd_subspace_partitioning(orbitals_blocks, Pv, S):
         nmo += i.shape[1]
 
 
-    print(" Partition %4i orbitals into a total of %4i orbitals" %(nmo, Pv.shape[1]))
-    PS = Pv.T @ S @ Pv
+    X = scipy.linalg.sqrtm(S)
 
-    P = Pv @ np.linalg.inv(PS) @ Pv.T
+    print(" Partition %4i orbitals into a total of %4i orbitals" %(nmo, Pv.shape[1]))
+    P = Pv @ np.linalg.inv(Pv.T @ S @ Pv) @ Pv.T
 
 
     s = []
@@ -78,7 +180,7 @@ def svd_subspace_partitioning(orbitals_blocks, Pv, S):
     Cf = []
     Ce = []
     for obi, ob in enumerate(orbitals_blocks):
-        _,sob,Vob = np.linalg.svd(P @ S @ ob, full_matrices=True)
+        _,sob,Vob = np.linalg.svd(X @ P @ S @ ob, full_matrices=True)
         s.extend(sob)
         Clist.append(ob @ Vob.T)
         spaces.extend([obi for i in range(ob.shape[1])])
@@ -108,8 +210,76 @@ def svd_subspace_partitioning(orbitals_blocks, Pv, S):
         block = spaces[i]
         Ce[block] = np.hstack((Ce[block], Ctot[:,i:i+1]))
 
+    print("  SVD active space has the following dimensions:")
+    print(" %14s %14s %14s" %("Orbital Block", "Environment", "Active"))
+    for obi,ob in enumerate(orbitals_blocks):
+        print(" %14i %14i %14i" %(obi, Ce[obi].shape[1], Cf[obi].shape[1]))
+        assert(abs(np.linalg.det(ob.T @ S @ ob)) > 1e-12)
 
     return Cf, Ce 
+
+def svd_subspace_partitioning_orth(orbitals_blocks, frag, S):
+    """
+    Find orbitals that most strongly overlap with the atomic orbitals listed in `frag` by doing rotations within each orbital block. 
+    [C1, C2, C3] -> [(C1f, C2f, C3f), (C1e, C2e, C3e)]
+    where C1f (C2f) and C1e (C2e) are the fragment orbitals in block 1 (2) and remainder orbitals in block 1 (2).
+
+    Common scenarios would be 
+        `orbital_blocks` = [Occ, Virt]
+        or 
+        `orbital_blocks` = [Occ, Sing, Virt]
+    
+    frag[ao1, ao2, ...] 
+    O[AO, occupied]
+    U[AO, virtual]
+
+    frag listed here are assumed to be orthogonalized AOs
+    """
+
+    print(" In svd_subspace_partitioning_orth")
+    nbas = S.shape[0]
+    assert(len(orbitals_blocks)) > 0
+
+    I = np.eye(nbas)
+
+    # Define projectors
+    X = scipy.linalg.sqrtm(S)
+    Xinv = np.linalg.inv(X)
+
+    # acts, envs = svd_subspace_partitioning([X@o for o in orbitals_blocks], X[:,frag], I)
+    # return [Xinv@o for o in acts], [Xinv@o for o in envs]
+    
+    return svd_subspace_partitioning(orbitals_blocks, X[:,frag], S)
+
+
+
+def svd_subspace_partitioning_nonorth(orbitals_blocks, frag, S):
+    """
+    Find orbitals that most strongly overlap with the atomic orbitals listed in `frags` by doing rotations within each orbital block. 
+    [C1, C2, C3] -> [(C1f, C2f, C3f), (C1e, C2e, C3e)]
+    where C1f (C2f) and C1e (C2e) are the fragment orbitals in block 1 (2) and remainder orbitals in block 1 (2).
+
+    Common scenarios would be 
+        `orbital_blocks` = [Occ, Virt]
+        or 
+        `orbital_blocks` = [Occ, Sing, Virt]
+    
+    frags[ao1, ao2, ...] 
+    O[AO, occupied]
+    U[AO, virtual]
+
+    NOTE: frags listed here are assumed to be the non-orthogonal AOs
+    """
+
+
+    print(" In svd_subspace_partitioning_nonorth")
+    nbas = S.shape[0]
+    assert(len(orbitals_blocks)) > 0
+
+    I = np.eye(nbas)
+
+    return svd_subspace_partitioning(orbitals_blocks, I[:,frag], S)
+
 
 
 

@@ -47,6 +47,43 @@ def test1():
         orb_index += nmof
 
 
+    print(" ---------------------------------------------------------------- ")
+    Cfrags2 = []
+    orb_index = 1
+    for fi,f in enumerate(frags):
+        print()
+        print(" Fragment: ", f)
+        (Of, Sf, Vf), (_, _, _) = orbitalpartitioning.svd_subspace_partitioning_orth((Cdocc, Csing, Cvirt), f, S)
+        Cfrags2.append(np.hstack((Of, Sf, Vf)))
+        
+    ref = [ 1,1,1]    
+    test = [np.linalg.det(Cfrags[fi].T @ S @ Cfrags2[fi]) for fi,f in enumerate(frags)] 
+
+    for i in range(len(ref)):
+        assert(abs(test[i])-abs(ref[i]) < 1e-12)      
+    
+    for fi,f in enumerate(frags):
+        print(" Should be 1: ", np.linalg.det(Cfrags[fi].T @ S @ Cfrags2[fi]))
+    print(" ---------------------------------------------------------------- ")
+
+    print(" ---------------------------------------------------------------- ")
+    Cfrags2 = []
+    orb_index = 1
+    for fi,f in enumerate(frags):
+        print()
+        print(" Fragment: ", f)
+        (Of, Sf, Vf), (_, _, _) = orbitalpartitioning.svd_subspace_partitioning_nonorth((Cdocc, Csing, Cvirt), f, S)
+        Cfrags2.append(np.hstack((Of, Sf, Vf)))
+        
+    ref = [ 0.9639412220052649, -0.9867599366347694, -0.9639404218744322]    
+    test = [np.linalg.det(Cfrags[fi].T @ S @ Cfrags2[fi]) for fi,f in enumerate(frags)] 
+
+    for i in range(len(ref)):
+        assert(abs(test[i])-abs(ref[i]) < 1e-12) 
+
+    for fi,f in enumerate(frags):
+        print(" Should be 1: ", np.linalg.det(Cfrags[fi].T @ S @ Cfrags2[fi]))
+    print(" ---------------------------------------------------------------- ")
 
     # Orthogonalize Fragment orbitals
     Cfrags = orbitalpartitioning.sym_ortho(Cfrags, S)
@@ -71,5 +108,34 @@ def test1():
     [print(i.shape) for i in vir]
 
 
+def test2():
+    with open('orbitalpartitioning/tests/data/data_CrOCr.pickle', 'rb') as handle:
+        data = pickle.load(handle)
+
+    Pf     = data["Pf"]      
+    Cdocc  = data["Cdocc"]   
+    Csing  = data["Csing"]   
+    Cvirt  = data["Cvirt"]   
+    S      = data["S"]       
+    frags  = data["frags"]       
+    init_fspace = []
+    clusters = []
+    Cfrags = []
+    orb_index = 1
+    
+    orbitals, init_fspace, clusters = orbitalpartitioning.dmet_clustering(Cdocc, Cvirt, frags, S)
+    
+    Cfull = np.hstack((orbitals))
+    assert(Cfull.shape[1] == round(np.trace(Cfull @ Cfull.T @ S)))
+
+    Cfull = orbitals[0]
+    assert(Cfull.shape[1] == round(np.trace(Cfull @ Cfull.T @ S)))
+
+    tmp = [i.shape[1] for i in orbitals]
+    ref = [57,12,8,12,271]
+    print(tmp, ref)
+    assert(tmp == ref)
+
 if __name__ == "__main__":
     test1()
+    test2()
